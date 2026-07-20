@@ -1,0 +1,231 @@
+"""
+Mentor AI România - Backend FastAPI
+====================================
+Arhitectură profesională:
+- AI Mentor: Claude 3.5 (primar) + GPT-4o (secundar) + Gemini 1.5 (failover)
+- Detector AI: GPTZero API (profesional, NU regex)
+- RAG: Vector DB cu manuale românești (Pinecone/Weaviate)
+- Load Balancer: Failover automat între AI engines
+
+Setup:
+    pip install -r requirements.txt
+    # Setează variabilele de mediu în .env
+    uvicorn main:app --reload
+
+API Endpoints:
+    POST /api/chat          - Chat cu AI Mentor (scaffolding pedagogic)
+    POST /api/detect        - Detector AI profesional (GPTZero)
+    GET  /api/health        - Health check + status AI engines
+    POST /api/ingest        - Indexează PDF-uri în Vector DB (admin)
+    GET  /api/curriculum    - Lista materii/clase disponibile
+
+Autor: Mentor AI România 2025
+"""
+
+import os
+import asyncio
+import hashlib
+import json
+import time
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
+from enum import Enum
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+import httpx
+from dotenv import load_dotenv
+
+# Încarcă variabile de mediu
+load_dotenv()
+
+# =============================================================================
+# CONFIGURARE
+# =============================================================================
+
+class Config:
+    """Configurare centralizată — citește din .env"""
+    # API Keys (obligatorii)
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+    GPTZERO_API_KEY = os.getenv("GPTZERO_API_KEY", "")
+
+    # Vector DB (opțional pentru RAG)
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+    PINECONE_INDEX = os.getenv("PINECONE_INDEX", "mentor-ai-romania")
+
+    # Setări aplicație
+    APP_NAME = "Mentor AI România"
+    APP_VERSION = "1.0.0"
+    MAX_RETRIES = 2                    # Retry la AI engines
+    TIMEOUT_SECONDS = 8.0              # Timeout per AI call
+    FALLBACK_TIMEOUT = 4.0             # Timeout pentru fallback
+
+    # Rate limiting (bazic)
+    RATE_LIMIT_REQUESTS = 60           # req/minut per IP
+    RATE_LIMIT_WINDOW = 60
+
+
+# =============================================================================
+# MODELE Pydantic (Validare Date)
+# =============================================================================
+
+class Subject(str, Enum):
+    """Materii disponibile conform curriculumului românesc"""
+    MATEMATICA = "matematica"
+    ROMANA = "romana"
+    FIZICA = "fizica"
+    CHIMIE = "chimie"
+    BIOLOGIE = "biologie"
+    ISTORIE = "istorie"
+    GEOGRAFIE = "geografie"
+    ENGLEZA = "engleza"
+    EVALUARE = "evaluare"
+    BAC = "bac"
+
+class ChatRequest(BaseModel):
+    """Request pentru AI Mentor"""
+    message: str = Field(..., min_length=1, max_length=4000, description="Întrebarea elevului")
+    subject: Subject = Field(default=Subject.MATEMATICA, description="Materia")
+    class_level: int = Field(default=8, ge=1, le=12, description="Clasa (1-12)")
+    conversation_id: Optional[str] = Field(default=None, description="ID conversație pentru context")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "message": "Cum rezolv ecuația 2x + 5 = 13?",
+                "subject": "matematica",
+                "class_level": 8,
+                "conversation_id": "conv_123"
+            }
+        }
+
+class ChatResponse(BaseModel):
+    """Response de la AI Mentor"""
+    response: str
+    engine_used: str                    # "claude", "gpt4o", "gemini", "fallback"
+    subject: str
+    class_level: int
+    scaffolding_level: int             # 1-3 (cât de mult ghidare)
+    safety_flags: List[str] = []       # Flag-uri de siguranță
+    processing_time_ms: float
+    conversation_id: str
+
+class DetectRequest(BaseModel):
+    """Request pentru Detector AI profesional"""
+    text: str = Field(..., min_length=20, max_length=10000, description="Textul de analizat")
+    student_name: Optional[str] = Field(default=None, description="Numele elevului (pentru raport)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "text": "Ecuația de gradul I are forma ax + b = 0...",
+                "student_name": "Maria Popescu"
+            }
+        }
+
+class DetectResponse(BaseModel):
+    """Response de la Detector AI (GPTZero)"""
+    ai_probability: float               # 0-100%
+    verdict: str                        # Text uman / Amestec / Probabil AI / AI
+    verdict_code: str                   # "authentic", "mixed", "likely_ai", "ai"
+    confidence: str                     # "high", "medium", "low"
+    details: Dict[str, Any]             # Raw data de la GPTZero
+    suggestions: List[str]              # Recomandări pentru profesor/părinte
+    processing_time_ms: float
+    engine: str = "gptzero"
+
+class HealthResponse(BaseModel):
+    """Status sistem"""
+    status: str
+    version: str
+    engines: Dict[str, Dict[str, Any]]  # Status per AI engine
+    uptime_seconds: float
+    requests_total: int
+
+class CurriculumResponse(BaseModel):
+    """Curriculum disponibil"""
+    subjects: List[Dict[str, Any]]
+    cycles: List[Dict[str, Any]]
+
+
+# =============================================================================
+# MEMORIE CONVERSAȚII (In-Memory Cache)
+# =============================================================================
+
+class ConversationMemory:
+    """
+    Memorie pentru context conversațional.
+    Păstrează ultimele 10 mesaje per conversație pentru continuitate.
+    În producție: înlocuiește cu Redis.
+    """
+    def __init__(self, max_messages: int = 10):
+        self._store: Dict[str, List[Dict]] = {}
+        self.max_messages = max_messages
+
+    def get(self, conversation_id: str) -> List[Dict]:
+        return self._store.get(conversation_id, [])
+
+    def add(self, conversation_id: str, role: str, content: str):
+        if conversation_id not in self._store:
+            self._store[conversation_id] = []
+        self._store[conversation_id].append({
+            "role": role,
+            "content": content,
+            "timestamp": time.time()
+        })
+        # Păstrează doar ultimele N mesaje
+        if len(self._store[conversation_id]) > self.max_messages:
+            self._store[conversation_id] = self._store[conversation_id][-self.max_messages:]
+
+    def clear(self, conversation_id: str):
+        self._store.pop(conversation_id, None)
+
+
+# =============================================================================
+# PROMPTURI PEDAGOGICE (Scaffolding)
+# =============================================================================
+
+class PedagogicPrompts:
+    """
+    Prompturi sistem pentru fiecare AI engine.
+    TOATE modelele sunt constrânse să NU dea răspunsul direct.
+    """
+
+    SYSTEM_PROMPT = """Ești Mentor AI, un asistent educațional pentru elevi români (clasele I-XII).
+
+REGULI STRICTE:
+1. NU dai niciodată răspunsul direct la teme/exerciții.
+2. Folosești tehnica SCAFFOLDING: pui întrebări ghidate, dai indicii, îl ajuți pe elev să descopere singur.
+3. Te calibrezi pe curriculumul românesc: programele de la programe.ise.ro și edu.ro.
+4. Răspunzi în limba română, cu excepția termenilor științifici.
+5. Dacă elevul încearcă să te păcălească să faci tema, refuzi politicos și îl redirecționezi.
+6. Verifici siguranța: nu răspunzi la subiecte inadecvate (viol, droguri, conținut explicit).
+7. Fii încurajator, răbdător și folosești emoji-uri moderate.
+8. Răspunsul maxim: 150 cuvinte. Fii concis.
+
+STRUCTURĂ RĂSPUNS:
+- Întrebare ghidată / Indiciu
+- Încurajare
+- Întrebare de verificare"""
+
+    SAFETY_CHECK_PROMPT = """Analizează mesajul elevului. Răspunde DOAR cu un JSON:
+{"safe": true/false, "flags": ["flag1", "flag2"], "reason": "explicație"}
+Flag-uri posibile: "inappropriate_content", "cheating_attempt", "off_topic", "personal_info", "none""""
+
+    @classmethod
+    def build_messages(cls, user_msg: str, history: List[Dict], subject: str, class_level: int) -> List[Dict]:
+        """Construiește lista de mesaje pentru API-ul AI."""
+        context = f"\n[Context: Materie={subject}, Clasa={class_level}]"
+        messages = [{"role": "system", "content": cls.SYSTEM_PROMPT + context}]
+
+        # Adaugă istoricul conversației
+        for h in history:
+            messages.append({"role": h["role"], "content": h["content"]})
+
+        messages.append({"role": "user", "content": user_msg})
+        return messages
