@@ -1,0 +1,682 @@
+# =============================================================================
+# AI ENGINES (Claude, GPT-4o, Gemini)
+# =============================================================================
+
+@dataclass
+class EngineResult:
+    """Rezultat de la un AI engine"""
+    success: bool
+    content: str = ""
+    engine: str = ""
+    error: str = ""
+    latency_ms: float = 0.0
+
+
+class AIEngines:
+    """
+    Manager pentru cele 3 AI engines cu load balancing și failover.
+    Ordinea: Claude (primar) → GPT-4o (secundar) → Gemini (failover).
+    """
+
+    def __init__(self):
+        self.httpx_client = httpx.AsyncClient(timeout=Config.TIMEOUT_SECONDS)
+        self.memory = ConversationMemory()
+        self._request_count = 0
+        self._start_time = time.time()
+
+    # -------------------------------------------------------------------------
+    # CLAUDE 3.5 SONNET (Primar)
+    # -------------------------------------------------------------------------
+    async def _call_claude(self, messages: List[Dict]) -> EngineResult:
+        """Apelează Anthropic Claude 3.5 Sonnet via API."""
+        if not Config.ANTHROPIC_API_KEY:
+            return EngineResult(False, engine="claude", error="API key missing")
+
+        start = time.time()
+        try:
+            # Extrage system prompt și conversație
+            system_msg = messages[0]["content"] if messages[0]["role"] == "system" else ""
+            conversation = [m for m in messages if m["role"] != "system"]
+
+            response = await self.httpx_client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": Config.ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-3-5-sonnet-20241022",
+                    "max_tokens": 512,
+                    "system": system_msg,
+                    "messages": conversation,
+                    "temperature": 0.7
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["content"][0]["text"]
+
+            return EngineResult(
+                success=True,
+                content=content,
+                engine="claude",
+                latency_ms=(time.time() - start) * 1000
+            )
+        except httpx.TimeoutException:
+            return EngineResult(False, engine="claude", error="Timeout", latency_ms=(time.time()-start)*1000)
+        except Exception as e:
+            return EngineResult(False, engine="claude", error=str(e), latency_ms=(time.time()-start)*1000)
+
+    # -------------------------------------------------------------------------
+    # GPT-4o (Secundar)
+    # -------------------------------------------------------------------------
+    async def _call_gpt4o(self, messages: List[Dict]) -> EngineResult:
+        """Apelează OpenAI GPT-4o via API."""
+        if not Config.OPENAI_API_KEY:
+            return EngineResult(False, engine="gpt4o", error="API key missing")
+
+        start = time.time()
+        try:
+            response = await self.httpx_client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4o",
+                    "messages": messages,
+                    "max_tokens": 512,
+                    "temperature": 0.7
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+
+            return EngineResult(
+                success=True,
+                content=content,
+                engine="gpt4o",
+                latency_ms=(time.time() - start) * 1000
+            )
+        except httpx.TimeoutException:
+            return EngineResult(False, engine="gpt4o", error="Timeout", latency_ms=(time.time()-start)*1000)
+        except Exception as e:
+            return EngineResult(False, engine="gpt4o", error=str(e), latency_ms=(time.time()-start)*1000)
+
+    # -------------------------------------------------------------------------
+    # GEMINI 1.5 PRO (Failover)
+    # -------------------------------------------------------------------------
+    async def _call_gemini(self, messages: List[Dict]) -> EngineResult:
+        """Apelează Google Gemini 1.5 Pro via API."""
+        if not Config.GOOGLE_API_KEY:
+            return EngineResult(False, engine="gemini", error="API key missing")
+
+        start = time.time()
+        try:
+            # Converteste formatul OpenAI în format Gemini
+            contents = []
+            for m in messages:
+                role = "model" if m["role"] == "system" else ("user" if m["role"] == "user" else "model")
+                contents.append({"role": role, "parts": [{"text": m["content"]}]})
+
+            response = await self.httpx_client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={Config.GOOGLE_API_KEY}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": contents,
+                    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 512}
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["candidates"][0]["content"]["parts"][0]["text"]
+
+            return EngineResult(
+                success=True,
+                content=content,
+                engine="gemini",
+                latency_ms=(time.time() - start) * 1000
+            )
+        except httpx.TimeoutException:
+            return EngineResult(False, engine="gemini", error="Timeout", latency_ms=(time.time()-start)*1000)
+        except Exception as e:
+            return EngineResult(False, engine="gemini", error=str(e), latency_ms=(time.time()-start)*1000)
+
+    # -------------------------------------------------------------------------
+    # SAFETY CHECK (pre-chat)
+    # -------------------------------------------------------------------------
+    async def _safety_check(self, message: str) -> Dict[str, Any]:
+        """Verifică dacă mesajul este sigur înainte de a trimite la AI."""
+        inappropriate_keywords = [
+            "bomba", "arma", "ucide", "sinucidere", "droguri", "sex explicit",
+            "pornografie", "hack", "fura banca", "virus"
+        ]
+        flags = []
+        msg_lower = message.lower()
+
+        for kw in inappropriate_keywords:
+            if kw in msg_lower:
+                flags.append("inappropriate_content")
+
+        # Verifică tentativă de "fă tema mea"
+        cheating_patterns = [
+            "rezolvă-mi", "fă-mi tema", "scrie-mi compunerea", "dă-mi răspunsul",
+            "copiază", "plagiază", "fă tot exercițiul"
+        ]
+        for pattern in cheating_patterns:
+            if pattern in msg_lower:
+                flags.append("cheating_attempt")
+
+        return {
+            "safe": len(flags) == 0,
+            "flags": flags if flags else ["none"]
+        }
+
+    # -------------------------------------------------------------------------
+    # ORCHESTRATOR (Failover Chain)
+    # -------------------------------------------------------------------------
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        """
+        Orchestrator principal:
+        1. Safety check
+        2. Încarcă memoria conversației
+        3. Încearcă Claude → GPT-4o → Gemini
+        4. Salvează în memorie
+        5. Returnează răspuns + metadate
+        """
+        start_total = time.time()
+        conv_id = request.conversation_id or f"conv_{hashlib.md5(request.message.encode()).hexdigest()[:8]}"
+
+        # 1. Safety check
+        safety = await self._safety_check(request.message)
+        if not safety["safe"]:
+            return ChatResponse(
+                response="🛡️ Hei! Am detectat că întrebarea ta nu este adecvată pentru platforma noastră educațională. Încearcă să reformulezi folosind cuvinte potrivite școlii! 📚",
+                engine_used="safety_filter",
+                subject=request.subject.value,
+                class_level=request.class_level,
+                scaffolding_level=0,
+                safety_flags=safety["flags"],
+                processing_time_ms=(time.time() - start_total) * 1000,
+                conversation_id=conv_id
+            )
+
+        # 2. Încarcă istoric
+        history = self.memory.get(conv_id)
+        messages = PedagogicPrompts.build_messages(
+            request.message, history, request.subject.value, request.class_level
+        )
+
+        # 3. Failover chain: Claude → GPT-4o → Gemini
+        engines = [
+            ("claude", self._call_claude),
+            ("gpt4o", self._call_gpt4o),
+            ("gemini", self._call_gemini)
+        ]
+
+        result: Optional[EngineResult] = None
+        used_engine = ""
+
+        for engine_name, engine_func in engines:
+            result = await engine_func(messages)
+            if result.success:
+                used_engine = engine_name
+                break
+            # Dacă e timeout, trecem imediat la următorul
+            if "Timeout" in result.error:
+                continue
+
+        # 4. Dacă toate au eșuat
+        if not result or not result.success:
+            return ChatResponse(
+                response="⚠️ Momentan toate serverele AI sunt ocupate. Te rog să încerci din nou în câteva secunde. Între timp, încearcă să rezolvi singur folosind manualul! 💪",
+                engine_used="all_failed",
+                subject=request.subject.value,
+                class_level=request.class_level,
+                scaffolding_level=0,
+                safety_flags=["engine_failure"],
+                processing_time_ms=(time.time() - start_total) * 1000,
+                conversation_id=conv_id
+            )
+
+        # 5. Salvează în memorie
+        self.memory.add(conv_id, "user", request.message)
+        self.memory.add(conv_id, "assistant", result.content)
+        self._request_count += 1
+
+        # 6. Calculează nivel scaffolding (1-3) bazat pe lungimea istoricului
+        scaffolding = min(3, 1 + len(history) // 3)
+
+        return ChatResponse(
+            response=result.content,
+            engine_used=used_engine,
+            subject=request.subject.value,
+            class_level=request.class_level,
+            scaffolding_level=scaffolding,
+            safety_flags=safety["flags"],
+            processing_time_ms=(time.time() - start_total) * 1000,
+            conversation_id=conv_id
+        )
+
+    async def health(self) -> Dict[str, Any]:
+        """Verifică statusul tuturor AI engines."""
+        engines_status = {}
+
+        # Test rapid fiecare engine cu un ping simplu
+        for name, func in [("claude", self._call_claude), ("gpt4o", self._call_gpt4o), ("gemini", self._call_gemini)]:
+            start = time.time()
+            try:
+                # Test ping cu mesaj minim
+                test_msg = [{"role": "user", "content": "Say 'ok' only."}]
+                result = await func(test_msg)
+                engines_status[name] = {
+                    "status": "online" if result.success else "error",
+                    "latency_ms": round(result.latency_ms, 1),
+                    "error": result.error if not result.success else None
+                }
+            except Exception as e:
+                engines_status[name] = {"status": "offline", "error": str(e)}
+
+        return {
+            "status": "healthy" if any(e["status"] == "online" for e in engines_status.values()) else "degraded",
+            "version": Config.APP_VERSION,
+            "engines": engines_status,
+            "uptime_seconds": round(time.time() - self._start_time, 1),
+            "requests_total": self._request_count
+        }
+
+
+# =============================================================================
+# DETECTOR AI PROFESIONAL (GPTZero API)
+# =============================================================================
+
+class AIDetector:
+    """
+    Detector AI profesional folosind GPTZero API.
+    NU folosește Claude/GPT/Gemini — este un serviciu dedicat.
+    """
+
+    def __init__(self):
+        self.client = httpx.AsyncClient(timeout=15.0)
+
+    async def detect(self, request: DetectRequest) -> DetectResponse:
+        """
+        Analizează textul cu GPTZero API.
+
+        GPTZero returnează:
+        - completely_generated_prob: probabilitatea că textul e 100% AI
+        - average_generated_prob: probabilitatea medie per propoziție
+        - document_class: clasificare ("human", "mixed", "ai")
+        """
+        if not Config.GPTZERO_API_KEY:
+            # Fallback: simulează un rezultat pentru demo (fără API key)
+            return self._simulate_detection(request)
+
+        start = time.time()
+        try:
+            response = await self.client.post(
+                "https://api.gptzero.me/v2/predict",
+                headers={
+                    "X-Api-Key": Config.GPTZERO_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "document": request.text,
+                    "version": "2024-01-01"
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Extrage rezultatele
+            doc = data.get("documents", [{}])[0]
+            ai_prob = doc.get("completely_generated_prob", 0) * 100
+            avg_prob = doc.get("average_generated_prob", 0) * 100
+            doc_class = doc.get("document_class", "unknown")
+
+            # Mapare verdict
+            verdict_map = {
+                "human": ("✅ Text autentic (uman)", "authentic", "high"),
+                "mixed": ("⚠️ Posibil amestec uman + AI", "mixed", "medium"),
+                "ai": ("🔴 Text generat de AI", "ai", "high")
+            }
+
+            # Fallback pe scor dacă document_class lipsește
+            if doc_class not in verdict_map:
+                if ai_prob < 20:
+                    doc_class = "human"
+                elif ai_prob < 50:
+                    doc_class = "mixed"
+                else:
+                    doc_class = "ai"
+
+            verdict_text, verdict_code, confidence = verdict_map[doc_class]
+
+            # Sugestii pentru părinte/profesor
+            suggestions = self._generate_suggestions(ai_prob, doc_class)
+
+            return DetectResponse(
+                ai_probability=round(ai_prob, 1),
+                verdict=verdict_text,
+                verdict_code=verdict_code,
+                confidence=confidence,
+                details={
+                    "completely_generated_prob": ai_prob,
+                    "average_generated_prob": avg_prob,
+                    "document_class": doc_class,
+                    "raw_response": data
+                },
+                suggestions=suggestions,
+                processing_time_ms=(time.time() - start) * 1000,
+                engine="gptzero"
+            )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise HTTPException(status_code=429, detail="Prea multe cereri la GPTZero. Încearcă în câteva secunde.")
+            raise HTTPException(status_code=502, detail=f"Eroare GPTZero: {e.response.text}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Eroare detector: {str(e)}")
+
+    def _generate_suggestions(self, ai_prob: float, doc_class: str) -> List[str]:
+        """Generează recomandări pedagogice bazate pe scor."""
+        if doc_class == "human":
+            return [
+                "✅ Textul arată autentic. Stilul natural și variațiile specifice elevului sunt evidente.",
+                "💡 Continuă să încurajezi scrisul original și creativitatea.",
+                "📚 Propune elevului să citească în continuare pentru a-și îmbogăți vocabularul."
+            ]
+        elif doc_class == "mixed":
+            return [
+                "⚠️ Textul conține elemente atât umane, cât și AI. Poate fi vorba de corectare gramaticală cu AI.",
+                "🗣️ Recomandă o discuție orală cu elevul despre conținutul textului.",
+                "📝 Cere elevului să rescrie textul cu cuvintele lui, fără ajutor digital."
+            ]
+        else:
+            return [
+                "🔴 Scor ridicat de AI detectat. Vocabularul academic și structura perfectă sugerează generare artificială.",
+                "🎯 Intervenție pedagogică necesară: discută cu elevul despre procesul de scriere.",
+                "📖 Propune exerciții de scriere creativă fără acces la AI pentru a dezvolta stilul propriu.",
+                "👁️ Monitorizează activitatea elevului pe platformă pentru a identifica tipare."
+            ]
+
+    def _simulate_detection(self, request: DetectRequest) -> DetectResponse:
+        """Simulează detectarea pentru demo (când nu există API key GPTZero)."""
+        start = time.time()
+        text = request.text.lower()
+
+        # Heuristic simplu DOAR pentru demo
+        indicators = {
+            "complex_words": len([w for w in text.split() if len(w) > 12]),
+            "perfect_punctuation": text.count(", ") > 5 and text.count(". ") > 3,
+            "repetitive": len(set(text.split())) / len(text.split()) if text.split() else 1,
+            "length": len(text)
+        }
+
+        score = 30
+        if indicators["complex_words"] > 3: score += 15
+        if indicators["perfect_punctuation"]: score += 10
+        if indicators["repetitive"] > 0.7: score -= 10
+        if indicators["length"] < 100: score -= 20
+
+        score = max(5, min(95, score + (hash(text) % 20 - 10)))
+
+        if score < 20:
+            verdict, code, conf = "✅ Text autentic (uman) [DEMO]", "authentic", "medium"
+        elif score < 50:
+            verdict, code, conf = "⚠️ Posibil amestec [DEMO]", "mixed", "medium"
+        else:
+            verdict, code, conf = "🔴 Probabil generat de AI [DEMO]", "ai", "medium"
+
+        return DetectResponse(
+            ai_probability=round(score, 1),
+            verdict=verdict,
+            verdict_code=code,
+            confidence=conf,
+            details={"mode": "demo_simulation", "indicators": indicators},
+            suggestions=self._generate_suggestions(score, code),
+            processing_time_ms=(time.time() - start) * 1000,
+            engine="gptzero_demo"
+        )
+
+
+# =============================================================================
+# CURRICULUM ROMÂNESC (Date Statice)
+# =============================================================================
+
+CURRICULUM_DATA = {
+    "subjects": [
+        {"id": "matematica", "name": "Matematică", "cycles": ["primar", "gimnazial", "liceu"]},
+        {"id": "romana", "name": "Limba și Literatura Română", "cycles": ["primar", "gimnazial", "liceu"]},
+        {"id": "fizica", "name": "Fizică", "cycles": ["gimnazial", "liceu"]},
+        {"id": "chimie", "name": "Chimie", "cycles": ["gimnazial", "liceu"]},
+        {"id": "biologie", "name": "Biologie", "cycles": ["gimnazial", "liceu"]},
+        {"id": "istorie", "name": "Istorie", "cycles": ["primar", "gimnazial", "liceu"]},
+        {"id": "geografie", "name": "Geografie", "cycles": ["gimnazial", "liceu"]},
+        {"id": "engleza", "name": "Limba Engleză", "cycles": ["primar", "gimnazial", "liceu"]},
+        {"id": "informatica", "name": "Informatică & TIC", "cycles": ["gimnazial", "liceu"]},
+        {"id": "evaluare", "name": "Evaluare Națională", "cycles": ["gimnazial"]},
+        {"id": "bac", "name": "Bacalaureat", "cycles": ["liceu"]}
+    ],
+    "cycles": [
+        {
+            "id": "primar",
+            "name": "Ciclul Primar",
+            "classes": [1, 2, 3, 4],
+            "description": "Clasele I-IV. Dezvoltare cognitivă de bază."
+        },
+        {
+            "id": "gimnazial",
+            "name": "Ciclul Gimnazial",
+            "classes": [5, 6, 7, 8],
+            "description": "Clasele V-VIII. Pregătire pentru Evaluarea Națională."
+        },
+        {
+            "id": "liceu",
+            "name": "Ciclul Liceal",
+            "classes": [9, 10, 11, 12],
+            "description": "Clasele IX-XII. Pregătire pentru Bacalaureat și admitere facultate."
+        }
+    ]
+}
+
+
+# =============================================================================
+# RATE LIMITING (Simplu, in-memory)
+# =============================================================================
+
+class RateLimiter:
+    """Rate limiting bazic per IP. În producție: folosește Redis."""
+    def __init__(self):
+        self._requests: Dict[str, List[float]] = {}
+
+    def is_allowed(self, client_ip: str) -> bool:
+        now = time.time()
+        window_start = now - Config.RATE_LIMIT_WINDOW
+
+        # Curăță cereri vechi
+        if client_ip in self._requests:
+            self._requests[client_ip] = [t for t in self._requests[client_ip] if t > window_start]
+        else:
+            self._requests[client_ip] = []
+
+        if len(self._requests[client_ip]) >= Config.RATE_LIMIT_REQUESTS:
+            return False
+
+        self._requests[client_ip].append(now)
+        return True
+
+
+# =============================================================================
+# FASTAPI APP
+# =============================================================================
+
+# Inițializează serviciile
+ai_engines = AIEngines()
+detector = AIDetector()
+rate_limiter = RateLimiter()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan handler pentru startup/shutdown."""
+    print(f"🚀 {Config.APP_NAME} v{Config.APP_VERSION} pornit!")
+    print(f"   Engines configurate: Claude={bool(Config.ANTHROPIC_API_KEY)}, GPT={bool(Config.OPENAI_API_KEY)}, Gemini={bool(Config.GOOGLE_API_KEY)}")
+    print(f"   Detector: GPTZero={bool(Config.GPTZERO_API_KEY)}")
+    yield
+    print("🛑 Oprire server...")
+    await ai_engines.httpx_client.aclose()
+    await detector.client.aclose()
+
+app = FastAPI(
+    title="Mentor AI România API",
+    description="Platformă educațională AI-safe pentru elevi și părinți • Clasele I-XII",
+    version=Config.APP_VERSION,
+    lifespan=lifespan
+)
+
+# CORS pentru frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # În producție: specifică domeniul frontend-ului
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# =============================================================================
+# ENDPOINTS API
+# =============================================================================
+
+@app.post("/api/chat", response_model=ChatResponse, tags=["AI Mentor"])
+async def chat_endpoint(request: ChatRequest, req: Request):
+    """
+    ## 💬 AI Mentor Pedagogic
+
+    Chat cu AI Mentor care folosește **Claude 3.5 Sonnet** (primar),
+    **GPT-4o** (secundar), **Gemini 1.5 Pro** (failover).
+
+    **Reguli:**
+    - NU dă răspunsul direct — folosește scaffolding
+    - Verifică siguranța mesajului înainte de procesare
+    - Păstrează context conversațional per `conversation_id`
+
+    **Exemplu request:**
+    ```json
+    {
+      "message": "Cum rezolv ecuația 2x + 5 = 13?",
+      "subject": "matematica",
+      "class_level": 8
+    }
+    ```
+    """
+    client_ip = req.client.host
+    if not rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Prea multe cereri. Încearcă mai târziu.")
+
+    return await ai_engines.chat(request)
+
+
+@app.post("/api/detect", response_model=DetectResponse, tags=["Detector AI"])
+async def detect_endpoint(request: DetectRequest, req: Request):
+    """
+    ## 🔍 Detector AI Profesional (GPTZero)
+
+    Analizează textul cu **GPTZero API** — tool dedicat pentru detectarea
+    conținutului generat de AI. **NU** folosește Claude/GPT/Gemini.
+
+    **Scor:** 0-100% probabilitate de AI
+    - **<20%** — Autentic uman
+    - **20-50%** — Posibil amestec
+    - **50-75%** — Probabil AI
+    - **>75%** — Generat de AI
+
+    **Exemplu request:**
+    ```json
+    {
+      "text": "Ecuația de gradul I are forma generală ax + b = 0...",
+      "student_name": "Maria Popescu"
+    }
+    ```
+    """
+    client_ip = req.client.host
+    if not rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Prea multe cereri. Încearcă mai târziu.")
+
+    return await detector.detect(request)
+
+
+@app.get("/api/health", response_model=HealthResponse, tags=["Sistem"])
+async def health_endpoint():
+    """
+    ## 🏥 Health Check
+
+    Verifică statusul tuturor componentelor:
+    - Status AI engines (Claude, GPT-4o, Gemini)
+    - Latency per engine
+    - Uptime și număr total de cereri
+    """
+    health = await ai_engines.health()
+    return HealthResponse(**health)
+
+
+@app.get("/api/curriculum", response_model=CurriculumResponse, tags=["Curriculum"])
+async def curriculum_endpoint():
+    """
+    ## 📚 Curriculum Românesc
+
+    Returnează lista completă de materii și cicluri disponibile,
+    conform curriculumului național românesc.
+    """
+    return CurriculumResponse(**CURRICULUM_DATA)
+
+
+@app.post("/api/ingest", tags=["Admin"])
+async def ingest_endpoint(background_tasks: BackgroundTasks, pdf_url: str):
+    """
+    ## 📥 Ingest PDF (Admin)
+
+    Indexează un PDF (manual școlar, programă) în Vector DB pentru RAG.
+    **Notă:** Necesită configurare Pinecone în .env.
+
+    **Parametru:** `pdf_url` — URL-ul PDF-ului de indexat
+    """
+    if not Config.PINECONE_API_KEY:
+        raise HTTPException(status_code=503, detail="Vector DB neconfigurat. Setează PINECONE_API_KEY în .env")
+
+    return {
+        "status": "queued",
+        "message": f"PDF {pdf_url} adăugat în coada de procesare. Implementare RAG necesită configurare completă.",
+        "note": "Pentru RAG complet, configurează Pinecone și implementează chunking + embedding."
+    }
+
+
+@app.get("/", tags=["Root"])
+async def root():
+    """Pagină principală API."""
+    return {
+        "name": Config.APP_NAME,
+        "version": Config.APP_VERSION,
+        "description": "Platformă educațională AI-safe pentru elevi și părinți • Clasele I-XII",
+        "endpoints": {
+            "chat": "POST /api/chat — AI Mentor (Claude/GPT/Gemini)",
+            "detect": "POST /api/detect — Detector AI profesional (GPTZero)",
+            "health": "GET /api/health — Status sistem",
+            "curriculum": "GET /api/curriculum — Curriculum românesc",
+            "docs": "/docs — Documentație Swagger"
+        },
+        "documentation": "/docs",
+        "health": "/api/health"
+    }
+
+
+# =============================================================================
+# PORNIRE (pentru dezvoltare)
+# =============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
