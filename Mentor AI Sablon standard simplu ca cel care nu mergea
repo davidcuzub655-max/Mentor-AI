@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MENTOR AI - Profesorul personal</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: { sans: ['Inter', 'sans-serif'] },
+      colors: {
+        primary: '#1a1a4e',
+        'primary-light': '#2d2d7a',
+        secondary: '#7c3aed',
+        accent: '#f59e0b',
+        'accent-light': '#fbbf24',
+        bg: '#0f0f23',
+        'bg-card': '#1a1a3e',
+        'bg-card-hover': '#222250',
+        'bg-input': '#151530',
+      }
+    }
+  }
+}
+</script>
+<style>
+body { font-family: 'Inter', sans-serif; background: #0f0f23; color: #f1f5f9; overflow-x: hidden; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes splashPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+@keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes flicker { 0% { transform: scale(1); } 100% { transform: scale(1.1); } }
+.animate-fadeIn { animation: fadeIn 0.4s ease; }
+.animate-slideUp { animation: slideUp 0.5s ease; }
+.animate-pulse-slow { animation: pulse 2s infinite; }
+.animate-splash { animation: splashPulse 2s ease-in-out infinite; }
+.animate-rotate { animation: rotate 3s linear infinite; }
+.animate-flicker { animation: flicker 1s ease-in-out infinite alternate; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+.glass { background: rgba(15,15,35,0.95); backdrop-filter: blur(20px); }
+.gradient-primary { background: linear-gradient(135deg, #1a1a4e 0%, #7c3aed 100%); }
+.gradient-accent { background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%); }
+.gradient-card { background: linear-gradient(145deg, #1a1a3e 0%, #252560 100%); }
+</style>
+<base target="_blank">
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const { useState, useEffect, useRef, useCallback } = React;
+
+const STORAGE_KEY = 'mentor_ai_data';
+const loadData = () => { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : null; };
+const saveData = (data) => { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); };
+const generateId = () => Math.random().toString(36).substr(2, 9);
+const formatTime = (seconds) => { 
+  const m = Math.floor(seconds / 60).toString().padStart(2, '0'); 
+  const s = (seconds % 60).toString().padStart(2, '0'); 
+  return m + ':' + s; 
+};
+
+const AI_RESPONSES = {
+  default: [
+    "Excelenta intrebare! Haide sa vedem impreuna cum putem aborda acest subiect.",
+    "Inteleg unde vrei sa ajungi. Iata o explicatie pas cu pas:",
+    "Foarte bine ca intrebi! Acest concept este fundamental.",
+    "Haide sa descompunem problema in pasi mici si usor de inteles.",
+    "Perfect! Voi crea un rezumat vizual pentru tine."
+  ],
+  math: [
+    "Pentru aceasta problema de matematica, incepe prin a identifica datele cunoscute.",
+    "Aplica formula generala si verifica fiecare pas. Ai incredere in proces!",
+    "Graficul functiei iti va arata comportamentul in jurul punctului critic."
+  ],
+  biology: [
+    "ADN-ul contine informatia genetica organizata in gene. Fiecare gena codifica o proteina.",
+    "Replicarea ADN-ului este semi-conservativa.",
+    "Mitocondriile sunt centrale energetice ale celulei."
+  ],
+  physics: [
+    "Legea lui Ohm: V = I x R. Tensiunea este direct proportionala cu curentul.",
+    "Energia cinetica depinde de masa si viteza: Ec = mv^2/2.",
+    "Campul electromagnetic se propaga cu viteza luminii in vid."
+  ],
+  romanian: [
+    "Analizeaza textul identificand tema, ideea poetica si motivele literare.",
+    "Figurile de stil imbogatesc expresivitatea textului.",
+    "In romanul interbelic, personajul este adesea un individ in conflict cu societatea."
+  ]
+};
+
+const getAIResponse = (message) => {
+  const lower = message.toLowerCase();
+  let category = 'default';
+  if (lower.includes('mate') || lower.includes('algebra') || lower.includes('geometrie') || lower.includes('integral')) category = 'math';
+  else if (lower.includes('bio') || lower.includes('adn') || lower.includes('celul') || lower.includes('genetic')) category = 'biology';
+  else if (lower.includes('fizic') || lower.includes('electro') || lower.includes('energie') || lower.includes('forta')) category = 'physics';
+  else if (lower.includes('romana') || lower.includes('poezie') || lower.includes('roman') || lower.includes('liter')) category = 'romanian';
+  const responses = AI_RESPONSES[category];
+  return responses[Math.floor(Math.random() * responses.length)];
+};
+
+const Toast = ({ message, type, onClose }) => {
+  useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
+  const icons = { success: 'fa-check-circle', warning: 'fa-exclamation-triangle', info: 'fa-info-circle' };
+  const colors = { success: 'text-emerald-400', warning: 'text-amber-400', info: 'text-blue-400' };
+  return (
+    <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[10001] animate-slideUp">
+      <div className="bg-bg-card border border-white/10 rounded-xl px-5 py-3.5 flex items-center gap-3 shadow-2xl">
+        <i className={"fas " + icons[type] + " " + colors[type] + " text-xl"}></i>
+        <span className="text-sm font-semibold">{message}</span>
+      </div>
+    </div>
+  );
+};
+
+const BottomNav = ({ active, onNavigate }) => {
+  const items = [
+    { id: 'home', icon: 'fa-home', label: 'Home' },
+    { id: 'professor', icon: 'fa-graduation-cap', label: 'Profesor AI' },
+    { id: 'learn', icon: 'fa-book-open', label: 'Invata' },
+    { id: 'calendar', icon: 'fa-calendar-alt', label: 'Calendar' },
+    { id: 'profile', icon: 'fa-user', label: 'Profil' }
+  ];
+  return (
+    <nav className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] glass border-t border-white/5 z-[1000] flex justify-around py-2 pb-6">
+      {items.map(item => (
+        <button key={item.id} onClick={() => onNavigate(item.id)} 
+          className={"flex flex-col items-center gap-1 px-4 py-2 transition-all " + (active === item.id ? 'text-secondary' : 'text-slate-500 hover:text-slate-300')}>
+          <i className={"fas " + item.icon + " text-[22px] transition-transform " + (active === item.id ? '-translate-y-0.5' : '')}></i>
+          <span className="text-[10px] font-semibold">{item.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+};
+
+const SplashScreen = ({ onFinish }) => {
+  useEffect(() => { const timer = setTimeout(onFinish, 2500); return () => clearTimeout(timer); }, [onFinish]);
+  return (
+    <div className="fixed inset-0 bg-bg flex flex-col items-center justify-center z-[10000] animate-fadeIn">
+      <div className="w-[120px] h-[120px] gradient-primary rounded-[28px] flex items-center justify-center text-6xl font-black text-white shadow-[0_0_40px_rgba(124,58,237,0.3)] animate-splash mb-6">M</div>
+      <div className="text-[32px] font-extrabold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent mb-2">MENTOR AI</div>
+      <div className="text-sm text-slate-400 text-center max-w-[280px] leading-relaxed mb-8">Profesorul personal din buzunarul tau</div>
+      <div className="text-[13px] text-slate-500 text-center font-medium">Invata mai inteligent.<br/>Cheltuie mai putin.<br/>Reuseste mai mult.</div>
+    </div>
+  );
+};
+
+const AuthScreen = ({ onLogin, onRegister }) => (
+  <div className="min-h-screen flex flex-col items-center px-6 pt-12 pb-24 animate-fadeIn">
+    <div className="w-20 h-20 gradient-primary rounded-[22px] flex items-center justify-center text-4xl font-black text-white shadow-[0_0_40px_rgba(124,58,237,0.3)] mb-6">M</div>
+    <h1 className="text-[26px] font-extrabold mb-2 text-center">Bun venit la Mentor AI</h1>
+    <p className="text-sm text-slate-400 mb-10 text-center">Profesorul tau personal, disponibil 24/7</p>
+    <div className="w-full flex flex-col gap-3 mb-6">
+      <button onClick={onRegister} className="w-full py-4 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center gap-3 text-sm font-semibold hover:bg-white/10 transition"><i className="fab fa-google text-[#ea4335]"></i> Continua cu Google</button>
+      <button onClick={onRegister} className="w-full py-4 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center gap-3 text-sm font-semibold hover:bg-white/10 transition"><i className="fab fa-apple"></i> Continua cu Apple</button>
+      <button onClick={onRegister} className="w-full py-4 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center gap-3 text-sm font-semibold hover:bg-white/10 transition"><i className="fab fa-microsoft text-[#00a4ef]"></i> Continua cu Microsoft</button>
+    </div>
+    <div className="w-full flex items-center gap-4 mb-6 text-slate-500 text-[13px]"><div className="flex-1 h-px bg-white/10"></div>sau<div className="flex-1 h-px bg-white/10"></div></div>
+    <button onClick={onRegister} className="w-full py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 hover:shadow-[0_8px_30px_rgba(124,58,237,0.5)] transition"><i className="fas fa-envelope"></i> Creeaza cont cu Email</button>
+    <button onClick={onLogin} className="w-full py-4 rounded-xl border-[1.5px] border-white/15 text-slate-400 font-semibold mt-3 hover:border-secondary hover:text-white transition">Ai deja cont? Conecteaza-te</button>
+    <p className="mt-auto pt-10 text-[13px] text-slate-500 text-center">Prin continuare, esti de acord cu <a href="#" className="text-secondary font-semibold">Termenii</a> si <a href="#" className="text-secondary font-semibold">Politica de Confidentialitate</a></p>
+  </div>
+);
+
+const RegisterScreen = ({ onBack, onContinue }) => {
+  const [form, setForm] = useState({ name: '', phone: '', email: '', school: '', class: '', password: '' });
+  const handleSubmit = () => { if (!form.name || !form.email) { alert('Completeaza numele si emailul!'); return; } onContinue(form); };
+  return (
+    <div className="min-h-screen flex flex-col items-center px-6 pt-12 pb-24 animate-fadeIn">
+      <div className="w-20 h-20 gradient-primary rounded-[22px] flex items-center justify-center text-4xl font-black text-white mb-6">M</div>
+      <h1 className="text-[26px] font-extrabold mb-2">Creeaza cont</h1>
+      <p className="text-sm text-slate-400 mb-8">Completeaza datele pentru a incepe</p>
+      {[{ key: 'name', label: 'Nume complet', type: 'text', placeholder: 'Ex: Andrei Popescu' },{ key: 'phone', label: 'Numar de telefon', type: 'tel', placeholder: '07xx xxx xxx' },{ key: 'email', label: 'Email', type: 'email', placeholder: 'nume@email.com' },{ key: 'school', label: 'Scoala / Liceul', type: 'text', placeholder: 'Ex: Liceul Teoretic "Mihai Eminescu"' },{ key: 'class', label: 'Clasa', type: 'text', placeholder: 'Ex: a XII-a A' },{ key: 'password', label: 'Parola', type: 'password', placeholder: 'Minim 8 caractere' }].map(field => (
+        <div key={field.key} className="w-full mb-4">
+          <label className="block text-[13px] font-semibold text-slate-400 mb-2">{field.label}</label>
+          <input type={field.type} value={form[field.key]} onChange={e => setForm({...form, [field.key]: e.target.value})}
+            className="w-full py-3.5 px-5 bg-bg-input border-[1.5px] border-white/10 rounded-xl text-white text-[15px] outline-none focus:border-secondary focus:shadow-[0_0_0_3px_rgba(124,58,237,0.15)] transition placeholder:text-slate-600"
+            placeholder={field.placeholder} />
+        </div>
+      ))}
+      <button onClick={handleSubmit} className="w-full py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 mt-4 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 transition"><i className="fas fa-arrow-right"></i> Continua</button>
+      <button onClick={onBack} className="w-full py-4 rounded-xl border-[1.5px] border-white/15 text-slate-400 font-semibold mt-3 hover:border-secondary hover:text-white transition flex items-center justify-center gap-2"><i className="fas fa-arrow-left"></i> Inapoi</button>
+    </div>
+  );
+};
+
+const LoginScreen = ({ onBack, onLogin }) => (
+  <div className="min-h-screen flex flex-col items-center px-6 pt-12 pb-24 animate-fadeIn">
+    <div className="w-20 h-20 gradient-primary rounded-[22px] flex items-center justify-center text-4xl font-black text-white mb-6">M</div>
+    <h1 className="text-[26px] font-extrabold mb-2">Conecteaza-te</h1>
+    <p className="text-sm text-slate-400 mb-8">Bine ai revenit!</p>
+    <div className="w-full mb-4"><label className="block text-[13px] font-semibold text-slate-400 mb-2">Email sau telefon</label><input type="text" className="w-full py-3.5 px-5 bg-bg-input border-[1.5px] border-white/10 rounded-xl text-white text-[15px] outline-none focus:border-secondary transition placeholder:text-slate-600" placeholder="Email sau numar de telefon" /></div>
+    <div className="w-full mb-6"><label className="block text-[13px] font-semibold text-slate-400 mb-2">Parola</label><input type="password" className="w-full py-3.5 px-5 bg-bg-input border-[1.5px] border-white/10 rounded-xl text-white text-[15px] outline-none focus:border-secondary transition placeholder:text-slate-600" placeholder="Parola ta" /></div>
+    <button onClick={onLogin} className="w-full py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 transition"><i className="fas fa-sign-in-alt"></i> Conecteaza-te</button>
+    <button onClick={onBack} className="w-full py-4 rounded-xl border-[1.5px] border-white/15 text-slate-400 font-semibold mt-3 hover:border-secondary hover:text-white transition flex items-center justify-center gap-2"><i className="fas fa-arrow-left"></i> Inapoi</button>
+  </div>
+);
+
+const OnboardingScreen = ({ step, total, title, desc, options, selected, onSelect, onNext, onBack, isLast, progress }) => (
+  <div className="min-h-screen flex flex-col px-6 pt-10 pb-24 animate-fadeIn">
+    <div className="mb-8">
+      <div className="text-xs text-secondary font-bold uppercase tracking-wider mb-2">Pasul {step} din {total}</div>
+      <h2 className="text-2xl font-extrabold mb-2">{title}</h2>
+      <p className="text-sm text-slate-400 leading-relaxed">{desc}</p>
+    </div>
+    <div className="flex flex-col gap-2.5 mb-6">
+      {options.map((opt, i) => (
+        <button key={i} onClick={() => onSelect(opt)} 
+          className={"w-full p-4 bg-bg-card border-2 rounded-xl flex items-center gap-3.5 transition text-left " + (selected === opt.value ? 'border-secondary bg-secondary/10' : 'border-transparent hover:border-secondary/30 hover:bg-bg-card-hover')}>
+          <div className={"w-9 h-9 rounded-[10px] flex items-center justify-center text-lg " + (selected === opt.value ? 'bg-secondary/20 text-secondary' : 'bg-secondary/10 text-secondary')}><i className={"fas " + opt.icon}></i></div>
+          <span className="text-[15px] font-semibold">{opt.label}</span>
+        </button>
+      ))}
+    </div>
+    <div className="mt-auto pt-6">
+      <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden mb-4"><div className="h-full gradient-primary rounded-full transition-all duration-500" style={{width: progress + '%'}}></div></div>
+      <div className="flex gap-3">
+        {step > 1 && (<button onClick={onBack} className="px-6 py-4 rounded-xl border-[1.5px] border-white/15 text-slate-400 font-semibold hover:border-secondary hover:text-white transition"><i className="fas fa-arrow-left"></i></button>)}
+        <button onClick={onNext} disabled={!selected} className={"flex-1 py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 transition disabled:opacity-50 disabled:hover:translate-y-0 "}>{isLast ? <><i className="fas fa-rocket"></i> Incepe calatoria!</> : <>Continua <i className="fas fa-arrow-right"></i></>}</button>
+      </div>
+    </div>
+  </div>
+);
+
+const HomeScreen = ({ userData, onNavigate }) => {
+  const [score, setScore] = useState(0);
+  const [scoreAnimated, setScoreAnimated] = useState(false);
+  useEffect(() => { if (!scoreAnimated) { setScoreAnimated(true); const target = userData.score || 0; let current = 0; const increment = target / 60; const interval = setInterval(() => { current += increment; if (current >= target) { current = target; clearInterval(interval); } setScore(Math.floor(current)); }, 25); return () => clearInterval(interval); } }, [userData.score, scoreAnimated]);
+  const circumference = 339.292;
+  const offset = circumference - (score / 100) * circumference;
+  return (
+    <div className="min-h-screen pb-24 animate-fadeIn">
+      <div className="flex justify-between items-start px-5 pt-5">
+        <div><div className="text-sm text-slate-400">Buna dimineata,</div><div className="text-xl font-bold">{userData.name || 'Elev'}!</div></div>
+        <div className="gradient-primary px-4 py-2 rounded-xl text-xs font-semibold text-center"><div>Mai sunt</div><div className="text-lg font-extrabold">--</div><div>zile pana la BAC</div></div>
+      </div>
+      <div className="mx-5 mt-5 p-6 gradient-card rounded-3xl border border-white/5 relative overflow-hidden">
+        <div className="absolute -top-1/2 -right-[20%] w-[200px] h-[200px] rounded-full bg-[radial-gradient(circle,rgba(124,58,237,0.2)_0%,transparent_70%)]"></div>
+        <div className="text-xs text-slate-400 uppercase tracking-wider font-bold mb-4 relative z-10">AI Academic Score</div>
+        <div className="flex items-center gap-6 relative z-10">
+          <div className="relative w-[120px] h-[120px] flex-shrink-0">
+            <svg width="120" height="120" viewBox="0 0 120 120" className="-rotate-90">
+              <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" />
+              <circle cx="60" cy="60" r="54" fill="none" stroke="url(#scoreGradient)" strokeWidth="8" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} className="transition-all duration-[1.5s] ease-out" />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center text-[32px] font-black">{score}</div>
+          </div>
+          <div className="flex-1 space-y-2">
+            <div className="flex justify-between items-center py-2 border-b border-white/5"><span className="text-[13px] text-slate-400">Nivel</span><span className="text-sm font-bold">{userData.level || 1}</span></div>
+            <div className="flex justify-between items-center py-2 border-b border-white/5"><span className="text-[13px] text-slate-400">Streak</span><span className="text-sm font-bold text-emerald-400"><i className="fas fa-fire text-amber-400 mr-1"></i> {(userData.streak || 0) + ' zile'}</span></div>
+            <div className="flex justify-between items-center py-2"><span className="text-[13px] text-slate-400">Ore totale</span><span className="text-sm font-bold">{(userData.totalHours || 0) + 'h'}</span></div>
+          </div>
+        </div>
+      </div>
+      <div className="mx-5 mt-5">
+        <div className="flex justify-between items-center mb-3"><span className="text-base font-bold">Progresul zilei</span><span className="text-[13px] text-secondary font-semibold cursor-pointer">Detalii</span></div>
+        <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden mb-2"><div className="h-full gradient-primary rounded-full relative transition-all duration-1000" style={{width: '0%'}}><div className="absolute right-0 top-0 bottom-0 w-5 bg-gradient-to-r from-transparent to-white/30 rounded-full"></div></div></div>
+        <div className="text-[13px] text-slate-400 text-right">0% din obiectivele zilei</div>
+      </div>
+      <div className="mx-5 mt-5 grid grid-cols-2 gap-3">
+        {[{ icon: 'fa-clock', color: 'bg-blue-500/15 text-blue-400', title: 'Ore azi', value: '0h', sub: 'Incepe sa inveti' },{ icon: 'fa-coins', color: 'bg-emerald-500/15 text-emerald-400', title: 'Mentor Coins', value: (userData.coins || 0).toLocaleString(), sub: 'Câstiga coins invatand' },{ icon: 'fa-trophy', color: 'bg-secondary/15 text-violet-400', title: 'Clasament', value: '--', sub: 'Completeaza lectii' },{ icon: 'fa-piggy-bank', color: 'bg-amber-500/15 text-amber-400', title: 'Economisit', value: '0 lei', sub: 'Incepe sa economisesti' }].map((card, i) => (
+          <div key={i} className="bg-bg-card rounded-2xl p-4 border border-white/5 hover:bg-bg-card-hover hover:-translate-y-0.5 transition">
+            <div className={"w-10 h-10 rounded-xl flex items-center justify-center text-lg mb-3 " + card.color}><i className={"fas " + card.icon}></i></div>
+            <div className="text-[13px] font-semibold mb-1">{card.title}</div>
+            <div className="text-xl font-extrabold">{card.value}</div>
+            <div className="text-[11px] text-slate-500 mt-1">{card.sub}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mx-5 mt-5">
+        <div className="flex justify-between items-center mb-3"><span className="text-base font-bold">Orarul de azi</span><span className="text-[13px] text-secondary font-semibold cursor-pointer">Vezi tot</span></div>
+        <div className="bg-bg-card rounded-2xl p-4 border border-white/5">
+          {[{ time: '08:00', subject: 'Romana', status: 'done' },{ time: '09:00', subject: 'Chimie', status: 'now' },{ time: '10:00', subject: 'Matematica', status: 'next' },{ time: '11:00', subject: 'Geografie', status: 'next' }].map((item, i) => (
+            <div key={i} className="flex items-center gap-3 py-2.5 border-b border-white/5 last:border-0">
+              <span className="text-[13px] font-bold text-secondary min-w-[50px]">{item.time}</span>
+              <span className="flex-1 text-sm font-semibold">{item.subject}</span>
+              <span className={"w-2 h-2 rounded-full " + (item.status === 'done' ? 'bg-emerald-400' : item.status === 'now' ? 'bg-amber-400 animate-pulse-slow' : 'bg-slate-500')}></span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="mx-5 mt-5">
+        <div className="bg-gradient-to-br from-red-500/15 to-red-500/5 border border-red-500/20 rounded-2xl p-4 flex items-start gap-3">
+          <i className="fas fa-exclamation-triangle text-red-400 text-xl mt-0.5"></i>
+          <div><div className="text-sm font-bold mb-1">Maine ai teste importante!</div><div className="text-[13px] text-slate-400 leading-relaxed">Test Biologie si Ascultare Engleza. Nu ai repetat inca lectia de maine.</div></div>
+        </div>
+      </div>
+      <div className="mx-5 mt-5">
+        <div className="gradient-card rounded-3xl p-5 border border-secondary/20 relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-[3px] gradient-primary"></div>
+          <div className="inline-flex items-center gap-1.5 bg-secondary/20 text-violet-300 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider mb-3"><i className="fas fa-sparkles text-xs"></i> AI Recomanda</div>
+          <div className="text-[15px] leading-relaxed mb-4">Astazi scorul tau academic este <strong>{userData.score || 0}</strong>. Daca mai inveti inca 20 minute la Matematica, vei ajunge la <strong>100</strong>.</div>
+          <div className="flex flex-col gap-2">
+            {[{ icon: 'fa-dna', subject: 'Biologie', time: '35 min' },{ icon: 'fa-square-root-alt', subject: 'Matematica', time: '20 min' },{ icon: 'fa-book', subject: 'Romana', time: '10 min' }].map((rec, i) => (
+              <div key={i} className="flex items-center gap-2.5 p-2.5 bg-black/20 rounded-xl"><i className={"fas " + rec.icon + " text-secondary text-sm"}></i><span className="text-sm font-semibold">{rec.subject}</span><span className="ml-auto text-xs text-slate-500">{rec.time}</span></div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <button onClick={() => onNavigate('learn')} className="mx-5 mt-5 mb-5 w-[calc(100%-40px)] py-5 gradient-primary rounded-2xl flex items-center justify-center gap-3 text-base font-bold text-white shadow-[0_8px_30px_rgba(124,58,237,0.4)] hover:-translate-y-1 hover:shadow-[0_12px_40px_rgba(124,58,237,0.5)] active:scale-[0.98] transition"><i className="fas fa-play"></i> Incepe sesiunea de invatare</button>
+    </div>
+  );
+};
+
+const ProfessorScreen = ({ onNavigate, onToast }) => {
+  const [chatHistory, setChatHistory] = useState([{ id: 1, type: 'ai', text: 'Buna! Sunt Profesorul Mentor. Cu ce te pot ajuta astazi? 📚' }]);
+  const [input, setInput] = useState('');
+  const messagesEndRef = useRef(null);
+  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  useEffect(scrollToBottom, [chatHistory]);
+  const sendMessage = () => { if (!input.trim()) return; const userMsg = { id: generateId(), type: 'user', text: input }; setChatHistory(prev => [...prev, userMsg]); setInput(''); setTimeout(() => { const response = getAIResponse(input); const aiMsg = { id: generateId(), type: 'ai', text: response }; setChatHistory(prev => [...prev, aiMsg]); }, 800 + Math.random() * 1000); };
+  return (
+    <div className="min-h-screen pb-24 animate-fadeIn">
+      <div className="text-center pt-8 pb-6 relative">
+        <div className="relative w-[100px] h-[100px] mx-auto mb-4">
+          <div className="absolute inset-[-6px] rounded-full border-2 border-transparent border-t-secondary border-r-secondary animate-rotate"></div>
+          <div className="w-full h-full rounded-full gradient-primary flex items-center justify-center text-5xl shadow-[0_0_40px_rgba(124,58,237,0.3)] relative z-10">🎓</div>
+          <div className="absolute bottom-1 right-1 w-5 h-5 bg-emerald-400 rounded-full border-[3px] border-bg z-20"></div>
+        </div>
+        <div className="text-[22px] font-extrabold mb-1">Profesor Mentor</div>
+        <div className="text-[13px] text-slate-400">AI Personal • Nivel Avansat</div>
+      </div>
+      <div className="text-lg font-bold text-center px-5 mb-6">Ce vrei sa invatam astazi?</div>
+      <div className="grid grid-cols-2 gap-3 px-5 mb-5">
+        {[{ icon: 'fa-camera', title: 'Fotografiaza lectia', sub: 'Scanare inteligenta', action: () => onToast('Camera AI se deschide...', 'info') },{ icon: 'fa-microphone', title: 'Vorbeste cu AI', sub: 'Conversatie vocala', action: () => { onToast('Se activeaza microfonul...', 'info'); setTimeout(() => onToast('Profesorul te asculta! Vorbeste acum.', 'success'), 1500); } },{ icon: 'fa-file-pdf', title: 'Incarca PDF', sub: 'Documente si manuale', action: () => onToast('Selecteaza un PDF...', 'info') },{ icon: 'fa-keyboard', title: 'Scrie intrebarea', sub: 'Chat text', action: () => {} }].map((method, i) => (
+          <button key={i} onClick={method.action} className="bg-bg-card border border-white/5 rounded-2xl p-5 text-center hover:border-secondary hover:bg-bg-card-hover hover:-translate-y-1 transition"><i className={"fas " + method.icon + " text-[28px] text-secondary mb-2.5 block"}></i><span className="text-[13px] font-semibold block">{method.title}</span><span className="text-[11px] text-slate-500">{method.sub}</span></button>
+        ))}
+      </div>
+      <div className="px-5 mb-4">
+        <div className="text-base font-bold mb-3">Istoric recent</div>
+        <div className="bg-bg-card rounded-2xl p-4 border border-white/5">
+          {[{ icon: 'fa-dna', subject: 'Biologie - ADN si replicare' },{ icon: 'fa-square-root-alt', subject: 'Matematica - Integrale' },{ icon: 'fa-atom', subject: 'Fizica - Electromagnetism' }].map((item, i) => (
+            <div key={i} className="flex items-center gap-3 py-2.5 border-b border-white/5 last:border-0"><i className={"fas " + item.icon + " text-secondary text-sm"}></i><span className="text-sm font-semibold">{item.subject}</span></div>
+          ))}
+        </div>
+      </div>
+      <div className="px-5">
+        <div className="text-base font-bold mb-3">Chat rapid</div>
+        <div className="bg-bg-card rounded-2xl border border-white/5 overflow-hidden flex flex-col" style={{height: '300px'}}>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {chatHistory.map(msg => (
+              <div key={msg.id} className={"max-w-[85%] p-3.5 rounded-2xl text-sm leading-relaxed animate-slideUp " + (msg.type === 'user' ? 'ml-auto gradient-primary rounded-br-md' : 'bg-bg-input border border-white/5 rounded-bl-md')}>{msg.text}</div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+          <div className="p-3 bg-bg border-t border-white/5 flex gap-2.5">
+            <input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && sendMessage()}
+              className="flex-1 py-3 px-4 bg-bg-input border border-white/10 rounded-full text-sm outline-none focus:border-secondary transition placeholder:text-slate-600" placeholder="Scrie o intrebare..." />
+            <button onClick={sendMessage} className="w-11 h-11 rounded-full gradient-primary flex items-center justify-center text-white hover:scale-110 transition"><i className="fas fa-paper-plane text-sm"></i></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const LearnTypeScreen = ({ onStart }) => {
+  const [selected, setSelected] = useState(null);
+  const types = [{ id: 'test', icon: 'fa-clipboard-check', color: 'text-red-400', label: 'Test' },{ id: 'listening', icon: 'fa-headphones', color: 'text-blue-400', label: 'Ascultare' },{ id: 'homework', icon: 'fa-pen', color: 'text-amber-400', label: 'Tema' },{ id: 'review', icon: 'fa-redo', color: 'text-emerald-400', label: 'Recapitulare' },{ id: 'exam', icon: 'fa-graduation-cap', color: 'text-secondary', label: 'Examen' },{ id: 'flashcards', icon: 'fa-clone', color: 'text-pink-400', label: 'Flashcard-uri' }];
+  return (
+    <div className="min-h-screen pb-24 animate-fadeIn">
+      <div className="p-5"><h2 className="text-[22px] font-extrabold mb-2">Ce inveti?</h2><p className="text-sm text-slate-400 mb-6">Alege tipul sesiunii de invatare</p></div>
+      <div className="grid grid-cols-2 gap-3 px-5 mb-6">
+        {types.map(type => (
+          <button key={type.id} onClick={() => setSelected(type.id)} className={"bg-bg-card rounded-2xl p-6 text-center border-2 transition " + (selected === type.id ? 'border-secondary bg-secondary/10' : 'border-transparent hover:border-secondary/30 hover:bg-bg-card-hover hover:-translate-y-1')}><i className={"fas " + type.icon + " text-[32px] " + type.color + " mb-3 block"}></i><span className="text-sm font-bold">{type.label}</span></button>
+        ))}
+      </div>
+      <div className="px-5"><button onClick={() => selected && onStart(selected)} disabled={!selected} className="w-full py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 transition disabled:opacity-50"><i className="fas fa-play"></i> Incepe sesiunea</button></div>
+    </div>
+  );
+};
+
+const TimerScreen = ({ onFinish, onToast }) => {
+  const [seconds, setSeconds] = useState(25 * 60);
+  const [isRunning, setIsRunning] = useState(false);
+  const [sound, setSound] = useState('mute');
+  const intervalRef = useRef(null);
+  useEffect(() => { if (isRunning) { intervalRef.current = setInterval(() => { setSeconds(s => { if (s <= 1) { clearInterval(intervalRef.current); setIsRunning(false); onFinish(); return 0; } return s - 1; }); }, 1000); } return () => clearInterval(intervalRef.current); }, [isRunning, onFinish]);
+  const toggleTimer = () => setIsRunning(!isRunning);
+  const stopTimer = () => { clearInterval(intervalRef.current); setIsRunning(false); onFinish(); };
+  const circumference = 754;
+  const totalSeconds = 25 * 60;
+  const offset = circumference - ((totalSeconds - seconds) / totalSeconds) * circumference;
+  const sounds = [{ id: 'mute', icon: 'fa-volume-mute', label: 'Fara sunet' },{ id: 'rain', icon: 'fa-cloud-rain', label: 'Ploaie' },{ id: 'forest', icon: 'fa-tree', label: 'Padure' },{ id: 'lofi', icon: 'fa-music', label: 'Lo-Fi' }];
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-5 pb-24 animate-fadeIn">
+      <div className="text-lg font-bold mb-2">Biologie</div>
+      <div className="text-sm text-slate-400 mb-8">ADN si replicare</div>
+      <div className="relative w-[260px] h-[260px] mb-10">
+        <svg width="260" height="260" viewBox="0 0 260 260" className="-rotate-90">
+          <circle cx="130" cy="130" r="120" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="12" />
+          <circle cx="130" cy="130" r="120" fill="none" stroke="url(#timerGradient)" strokeWidth="12" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} className="transition-all duration-1000 linear" />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="text-[56px] font-black tracking-tighter tabular-nums">{formatTime(seconds)}</div>
+          <div className="text-sm text-slate-400 mt-1">Focus Time</div>
+        </div>
+      </div>
+      <div className="flex gap-5 mb-8">
+        <button onClick={stopTimer} className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center text-white text-2xl shadow-[0_8px_30px_rgba(239,68,68,0.4)] hover:scale-110 transition"><i className="fas fa-stop"></i></button>
+        <button onClick={toggleTimer} className={"w-16 h-16 rounded-full flex items-center justify-center text-white text-2xl shadow-[0_8px_30px_rgba(124,58,237,0.4)] hover:scale-110 transition " + (isRunning ? 'bg-amber-500 shadow-[0_8px_30px_rgba(245,158,11,0.4)]' : 'gradient-primary')}><i className={"fas " + (isRunning ? 'fa-pause' : 'fa-play')}></i></button>
+      </div>
+      <div className="flex gap-2.5 flex-wrap justify-center">
+        {sounds.map(s => (
+          <button key={s.id} onClick={() => setSound(s.id)} className={"px-4 py-2 rounded-full text-xs font-semibold transition border " + (sound === s.id ? 'bg-secondary text-white border-secondary' : 'bg-bg-card text-slate-400 border-white/10 hover:bg-secondary/20')}><i className={"fas " + s.icon + " mr-1.5"}></i>{s.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ReportScreen = ({ onHome, onToast }) => {
+  const [showConfetti, setShowConfetti] = useState(true);
+  useEffect(() => { const timer = setTimeout(() => setShowConfetti(false), 3000); return () => clearTimeout(timer); }, []);
+  return (
+    <div className="min-h-screen flex flex-col items-center px-5 pt-12 pb-24 animate-fadeIn">
+      <div className="text-5xl mb-4">{showConfetti ? '🎉' : '✨'}</div>
+      <h1 className="text-2xl font-extrabold mb-2">Felicitari!</h1>
+      <p className="text-sm text-slate-400 mb-8">Ai terminat sesiunea de invatare</p>
+      <div className="grid grid-cols-2 gap-3 w-full mb-6">
+        {[{ value: '1h 47m', label: 'Timp invatat', color: 'text-secondary' },{ value: '+41%', label: 'Progres', color: 'text-emerald-400' },{ value: '38', label: 'Teste rezolvate', color: 'text-blue-400' },{ value: '91%', label: 'Probabilitate nota >9', color: 'text-amber-400' }].map((stat, i) => (
+          <div key={i} className="bg-bg-card rounded-2xl p-5 text-center border border-white/5"><div className={"text-[32px] font-black mb-1 " + stat.color}>{stat.value}</div><div className="text-xs text-slate-500">{stat.label}</div></div>
+        ))}
+      </div>
+      <div className="w-full bg-bg-card rounded-2xl p-5 mb-6 border-l-[3px] border-secondary"><p className="text-[15px] leading-relaxed italic">"Foarte bine! Iti recomand doar inca 15 minute maine pentru a fixa informatia. Esti pe drumul cel bun!"</p></div>
+      <div className="flex items-center gap-2 text-lg font-extrabold text-amber-400 mb-6"><i className="fas fa-coins"></i><span>+25 Mentor Coins castigate!</span></div>
+      <button onClick={() => { onHome(); onToast('Sesiune salvata! +25 Coins', 'success'); }} className="w-full py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 transition"><i className="fas fa-check"></i> Super! Inapoi acasa</button>
+    </div>
+  );
+};
+
+const CalendarScreen = ({ userData }) => {
+  const [selectedDate, setSelectedDate] = useState(19);
+  const [currentMonth, setCurrentMonth] = useState(new Date(2026, 6, 1));
+  const daysInMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0).getDate();
+  const startDay = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1).getDay();
+  const adjustedStart = startDay === 0 ? 6 : startDay - 1;
+  const events = [{ day: 15, type: 'test', title: 'Test Biologie', time: '08:00', detail: 'Capitolul ADN' },{ day: 20, type: 'homework', title: 'Tema Fizica', time: '23:59', detail: 'Exercitii pag. 45' },{ day: 22, type: 'test', title: 'Ascultare Engleza', time: '10:00', detail: 'Unitatea 4' },{ day: 28, type: 'exam', title: 'Simulare BAC Matematica', time: '09:00', detail: 'Subiectul I, II, III' }];
+  const today = 19;
+  const monthNames = ['Ianuarie','Februarie','Martie','Aprilie','Mai','Iunie','Iulie','August','Septembrie','Octombrie','Noiembrie','Decembrie'];
+  const selectedEvents = events.filter(e => e.day === selectedDate);
+  return (
+    <div className="min-h-screen pb-24 animate-fadeIn">
+      <div className="text-center p-5">
+        <div className="flex items-center justify-center gap-4 mb-4">
+          <button onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1))} className="w-8 h-8 rounded-full bg-bg-card flex items-center justify-center hover:bg-bg-card-hover transition"><i className="fas fa-chevron-left text-xs"></i></button>
+          <div className="text-xl font-extrabold">{monthNames[currentMonth.getMonth()]} {currentMonth.getFullYear()}</div>
+          <button onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1))} className="w-8 h-8 rounded-full bg-bg-card flex items-center justify-center hover:bg-bg-card-hover transition"><i className="fas fa-chevron-right text-xs"></i></button>
+        </div>
+        <div className="grid grid-cols-7 gap-2 mb-2">
+          {['Lu','Ma','Mi','Jo','Vi','Sa','Du'].map(d => (<div key={d} className="text-center text-[11px] font-bold text-slate-500 uppercase">{d}</div>))}
+        </div>
+        <div className="grid grid-cols-7 gap-2">
+          {Array.from({length: adjustedStart}).map((_, i) => <div key={'empty-' + i}></div>)}
+          {Array.from({length: daysInMonth}).map((_, i) => {
+            const day = i + 1;
+            const hasEvent = events.some(e => e.day === day);
+            const eventType = events.find(e => e.day === day)?.type;
+            return (
+              <button key={day} onClick={() => setSelectedDate(day)} className={"aspect-square flex items-center justify-center rounded-xl text-sm font-semibold transition relative " + (day === today ? 'gradient-primary shadow-[0_4px_15px_rgba(124,58,237,0.4)]' : day === selectedDate ? 'bg-secondary/30 border border-secondary' : 'hover:bg-bg-card-hover')}>
+                {day}
+                {hasEvent && (<span className={"absolute bottom-1 w-1 h-1 rounded-full " + (eventType === 'test' ? 'bg-red-400' : eventType === 'homework' ? 'bg-blue-400' : 'bg-amber-400')}></span>)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="px-5">
+        <div className="flex justify-between items-center mb-4"><span className="text-base font-bold">Evenimente {selectedDate ? '- ' + selectedDate + ' ' + monthNames[currentMonth.getMonth()] : ''}</span><span className="text-[13px] text-secondary font-semibold cursor-pointer">+ Adauga</span></div>
+        <div className="space-y-2.5">
+          {selectedEvents.length > 0 ? selectedEvents.map((event, i) => (
+            <div key={i} className={"flex items-center gap-3.5 p-3.5 bg-bg-card rounded-xl border-l-[3px] " + (event.type === 'test' ? 'border-red-400' : event.type === 'homework' ? 'border-blue-400' : 'border-amber-400')}>
+              <div className={"w-10 h-10 rounded-xl flex items-center justify-center text-base " + (event.type === 'test' ? 'bg-red-500/15 text-red-400' : event.type === 'homework' ? 'bg-blue-500/15 text-blue-400' : 'bg-amber-500/15 text-amber-400')}><i className={"fas " + (event.type === 'test' ? 'fa-clipboard-check' : event.type === 'homework' ? 'fa-pen' : 'fa-graduation-cap')}></i></div>
+              <div className="flex-1"><div className="text-sm font-bold">{event.title}</div><div className="text-xs text-slate-500">{event.time} • {event.detail}</div></div>
+            </div>
+          )) : (<div className="text-center py-8 text-slate-500 text-sm">Nu exista evenimente in aceasta zi</div>)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ProfileScreen = ({ userData, onUpdate, onToast, onReset }) => {
+  const [activeTab, setActiveTab] = useState('school');
+  const leaderboardData = {
+    school: [{ rank: 1, name: 'Maria Ionescu', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '12,450', avatar: 'M' },{ rank: 2, name: 'Alex Dumitru', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '11,200', avatar: 'A' },{ rank: 3, name: 'Elena Marinescu', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '10,800', avatar: 'E' },{ rank: 4, name: 'Radu Stancu', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '9,600', avatar: 'R' },{ rank: 5, name: 'Cristina Popa', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '9,100', avatar: 'C' },{ rank: 7, name: 'Andrei Popescu (Tu)', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '8,450', avatar: 'A', you: true }],
+    city: [{ rank: 1, name: 'David Munteanu', school: 'Colegiul National', xp: '15,200', avatar: 'D' },{ rank: 2, name: 'Sofia Radu', school: 'Liceul Teoretic', xp: '14,800', avatar: 'S' },{ rank: 3, name: 'Maria Ionescu', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '12,450', avatar: 'M' },{ rank: 42, name: 'Andrei Popescu (Tu)', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '8,450', avatar: 'A', you: true }],
+    national: [{ rank: 1, name: 'Elena Marginean', school: 'Colegiul National "Banatean"', xp: '18,900', avatar: 'E' },{ rank: 2, name: 'Radu Stanescu', school: 'Liceul International', xp: '18,200', avatar: 'R' },{ rank: 3, name: 'Ana Popescu', school: 'Colegiul National', xp: '17,500', avatar: 'A' },{ rank: 156, name: 'Andrei Popescu (Tu)', school: 'Liceul Teoretic "Mihai Eminescu"', xp: '8,450', avatar: 'A', you: true }]
+  };
+  const shopItems = [{ id: 'avatar1', icon: '🦸', name: 'Avatar Supererou', price: 150 },{ id: 'theme1', icon: '🌌', name: 'Tema Cosmos', price: 300 },{ id: 'voice1', icon: '🎙️', name: 'Voce AI Noua', price: 500 },{ id: 'effect1', icon: '✨', name: 'Efecte Speciale', price: 250 }];
+  const buyItem = (item) => { if (userData.coins >= item.price) { onUpdate({...userData, coins: userData.coins - item.price}); onToast('Ai cumparat ' + item.name + '! -' + item.price + ' Coins', 'success'); } else { onToast('Nu ai suficiente Mentor Coins!', 'warning'); } };
+  const xpPercent = ((userData.xp % 10000) / 10000) * 100;
+  return (
+    <div className="min-h-screen pb-24 animate-fadeIn">
+      <div className="relative text-center pt-5 pb-6">
+        <div className="absolute top-0 left-0 right-0 h-[120px] gradient-primary opacity-30 rounded-b-3xl"></div>
+        <div className="relative w-[100px] h-[100px] mx-auto mt-10 mb-4">
+          <div className="w-full h-full rounded-full gradient-primary flex items-center justify-center text-[40px] border-4 border-bg shadow-xl overflow-hidden">👨‍🎓</div>
+          <div className="absolute -bottom-1 -right-1 gradient-accent text-primary px-3 py-1 rounded-xl text-xs font-extrabold border-[3px] border-bg">NIV. {userData.level}</div>
+        </div>
+        <div className="text-[22px] font-extrabold mb-1">{userData.name} {userData.surname || 'Popescu'}</div>
+        <div className="text-[13px] text-slate-400 mb-4">{userData.school}</div>
+        <div className="flex justify-center gap-6">
+          {[{ value: userData.totalHours + 'h', label: 'Ore totale' },{ value: (userData.coins || 0).toLocaleString(), label: 'Coins' },{ value: <><i className="fas fa-fire text-amber-400 mr-1 animate-flicker"></i>{userData.streak}</>, label: 'Streak' }].map((stat, i) => (<div key={i} className="text-center"><div className="text-xl font-extrabold">{stat.value}</div><div className="text-[11px] text-slate-500 uppercase tracking-wider">{stat.label}</div></div>))}
+        </div>
+      </div>
+      <div className="mx-5 mb-5 p-4 bg-bg-card rounded-2xl">
+        <div className="flex justify-between text-[13px] mb-2"><span className="font-bold">XP pana la nivelul {userData.level + 1}</span><span className="text-slate-500">{userData.xp.toLocaleString()} / 10,000</span></div>
+        <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden"><div className="h-full gradient-primary rounded-full transition-all duration-500" style={{width: xpPercent + '%'}}></div></div>
+      </div>
+      <div className="mx-5 mb-5 flex items-center justify-center gap-2 bg-gradient-to-br from-amber-500/15 to-amber-500/5 border border-amber-500/20 py-2.5 px-5 rounded-xl">
+        <i className="fas fa-coins text-amber-400 text-lg"></i>
+        <span className="text-lg font-extrabold text-amber-400">{userData.coins.toLocaleString()} Mentor Coins</span>
+      </div>
+      <div className="flex gap-2 px-5 mb-4 overflow-x-auto pb-2">
+        {[{ id: 'school', icon: '🏫', label: 'Scoala' },{ id: 'city', icon: '🏙️', label: 'Oras' },{ id: 'national', icon: '🇷🇴', label: 'National' }].map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={"px-4 py-2 rounded-full text-xs font-semibold whitespace-nowrap transition " + (activeTab === tab.id ? 'gradient-primary text-white' : 'bg-bg-card border border-white/10 text-slate-400 hover:text-white')}>{tab.icon} {tab.label}</button>
+        ))}
+      </div>
+      <div className="px-5 mb-6">
+        {leaderboardData[activeTab].map((item, i) => (
+          <div key={i} className={"flex items-center gap-3.5 py-3 border-b border-white/5 last:border-0 " + (item.you ? 'bg-secondary/10 -mx-5 px-5 rounded-xl border-0 mb-2' : '')}>
+            <div className={"w-8 text-center text-base font-extrabold " + (item.rank === 1 ? 'text-yellow-400' : item.rank === 2 ? 'text-slate-300' : item.rank === 3 ? 'text-amber-600' : '')}>{item.rank}</div>
+            <div className="w-10 h-10 rounded-full gradient-primary flex items-center justify-center text-sm font-bold">{item.avatar}</div>
+            <div className="flex-1 min-w-0"><div className="text-sm font-semibold truncate">{item.name}</div><div className="text-[11px] text-slate-500 truncate">{item.school}</div></div>
+            <div className="text-sm font-bold text-secondary">{item.xp} XP</div>
+          </div>
+        ))}
+      </div>
+      <div className="px-5 mb-4">
+        <div className="flex justify-between items-center mb-3"><span className="text-base font-bold">Magazin Mentor</span><span className="text-[13px] text-secondary font-semibold cursor-pointer">Vezi tot</span></div>
+        <div className="grid grid-cols-2 gap-3">
+          {shopItems.map(item => (
+            <button key={item.id} onClick={() => buyItem(item)} className="bg-bg-card rounded-2xl p-4 text-center border border-white/5 hover:border-secondary hover:-translate-y-1 transition">
+              <div className="w-20 h-20 mx-auto mb-3 rounded-xl bg-bg-input flex items-center justify-center text-4xl">{item.icon}</div>
+              <div className="text-[13px] font-semibold mb-1">{item.name}</div>
+              <div className="flex items-center justify-center gap-1 text-sm font-bold text-amber-400"><i className="fas fa-coins text-xs"></i> {item.price}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="px-5">
+        <div className="text-base font-bold mb-3">Statistici</div>
+        <div className="grid grid-cols-2 gap-3">
+          {[{ icon: 'fa-book', color: 'bg-blue-500/15 text-blue-400', title: 'Capitole', value: '47' },{ icon: 'fa-check-circle', color: 'bg-emerald-500/15 text-emerald-400', title: 'Teste', value: '128' },{ icon: 'fa-trophy', color: 'bg-secondary/15 text-violet-400', title: 'Badge-uri', value: '15' },{ icon: 'fa-star', color: 'bg-amber-500/15 text-amber-400', title: 'Medie', value: '9.2' }].map((card, i) => (
+            <div key={i} className="bg-bg-card rounded-2xl p-4 border border-white/5">
+              <div className={"w-10 h-10 rounded-xl flex items-center justify-center text-lg mb-3 " + card.color}><i className={"fas " + card.icon}></i></div>
+              <div className="text-[13px] font-semibold mb-1">{card.title}</div>
+              <div className="text-xl font-extrabold">{card.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="px-5 mt-6 mb-8">
+        <button onClick={() => {
+          if (confirm('Esti sigur ca vrei sa resetezi contul? Toate progresele vor fi pierdute!')) {
+            onReset();
+          }
+        }} className="w-full py-4 rounded-xl border-2 border-red-500/30 text-red-400 font-semibold hover:bg-red-500/10 hover:border-red-500/50 transition flex items-center justify-center gap-2">
+          <i className="fas fa-trash-alt"></i> Resetare cont
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const App = () => {
+  const [screen, setScreen] = useState('splash');
+  const [navScreen, setNavScreen] = useState('home');
+  const [toast, setToast] = useState(null);
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [onboardingData, setOnboardingData] = useState({});
+
+  const defaultUserData = {
+    name: '',
+    surname: '',
+    level: 1,
+    xp: 0,
+    coins: 0,
+    streak: 0,
+    score: 0,
+    totalHours: 0,
+    school: '',
+    class: '',
+    profile: '',
+    exam: '',
+    dailyHours: '',
+    isLoggedIn: false,
+    hasCompletedOnboarding: false
+  };
+
+  const [userData, setUserData] = useState(() => {
+    const saved = loadData();
+    return saved || defaultUserData;
+  });
+
+  useEffect(() => { saveData(userData); }, [userData]);
+
+  const showToast = useCallback((message, type = 'success') => { setToast({ message, type }); }, []);
+
+  const handleSplashFinish = () => { 
+    if (userData.hasCompletedOnboarding && userData.isLoggedIn) {
+      setScreen('home');
+      setNavScreen('home');
+    } else {
+      setScreen('auth');
+    }
+  };
+
+  const handleLogin = () => {
+    setUserData({ ...userData, isLoggedIn: true });
+    setScreen('home');
+    setNavScreen('home');
+    showToast('Bun venit!', 'success');
+  };
+
+  const handleRegister = (formData) => {
+    const nameParts = (formData.name || '').split(' ');
+    setUserData({
+      ...userData,
+      name: nameParts[0] || '',
+      surname: nameParts.slice(1).join(' ') || '',
+      school: formData.school || '',
+      class: formData.class || '',
+      isLoggedIn: true
+    });
+    setOnboardingStep(1);
+    setScreen('onboarding');
+  };
+
+  const handleOnboardingNext = () => {
+    if (onboardingStep >= 5) {
+      setUserData(prev => ({ ...prev, isLoggedIn: true, hasCompletedOnboarding: true }));
+      setScreen('home');
+      setNavScreen('home');
+      showToast('Bun venit, ' + (userData.name || 'elev') + '! Profilul tau este gata.', 'success');
+    } else {
+      setOnboardingStep(onboardingStep + 1);
+    }
+  };
+
+  const handleOnboardingBack = () => {
+    if (onboardingStep > 1) {
+      setOnboardingStep(onboardingStep - 1);
+    } else {
+      setScreen('register');
+    }
+  };
+
+  const handleNavigate = (target) => {
+    setNavScreen(target);
+    const map = { home: 'home', professor: 'professor', learn: 'learnType', calendar: 'calendar', profile: 'profile' };
+    setScreen(map[target] || target);
+  };
+
+  const handleStartLearn = (type) => {
+    setScreen('timer');
+  };
+
+  const handleTimerFinish = () => {
+    setUserData(prev => ({
+      ...prev,
+      coins: (prev.coins || 0) + 25,
+      totalHours: (prev.totalHours || 0) + 0.5,
+      xp: (prev.xp || 0) + 50,
+      score: Math.min(100, (prev.score || 0) + 5)
+    }));
+    setScreen('report');
+  };
+
+  const onboardingSteps = [
+    {
+      step: 1, title: 'Cum te cheama?', desc: 'AI-ul tau personal vrea sa stie cum sa te strige.',
+      options: [], isInput: true, inputKey: 'name', progress: 20
+    },
+    {
+      step: 2, title: 'Ce clasa esti?', desc: 'Personalizam continutul in functie de anul tau de studiu.',
+      options: [
+        { icon: 'fa-child', label: 'Clasele V-VIII', value: 'gimnaziu' },
+        { icon: 'fa-user-graduate', label: 'Clasele IX-XII', value: 'liceu' },
+        { icon: 'fa-university', label: 'Facultate', value: 'facultate' }
+      ],
+      inputKey: 'grade', progress: 40
+    },
+    {
+      step: 3, title: 'Ce profil ai?', desc: 'Alege profilul tau pentru materii personalizate.',
+      options: [
+        { icon: 'fa-flask', label: 'Real (Mate-Info)', value: 'mate-info' },
+        { icon: 'fa-calculator', label: 'Real (Stiinte)', value: 'stiinte' },
+        { icon: 'fa-book', label: 'Uman (Filologie)', value: 'filologie' },
+        { icon: 'fa-globe', label: 'Uman (Socio-Uman)', value: 'socio-uman' }
+      ],
+      inputKey: 'profile', progress: 60
+    },
+    {
+      step: 4, title: 'Ce examen urmeaza?', desc: 'Te ajutam sa te pregatesti strategic.',
+      options: [
+        { icon: 'fa-clipboard-check', label: 'Evaluare Nationala', value: 'evaluare' },
+        { icon: 'fa-graduation-cap', label: 'BAC', value: 'bac' },
+        { icon: 'fa-door-open', label: 'Admitere facultate', value: 'admitere' },
+        { icon: 'fa-book-open', label: 'Niciun examen momentan', value: 'none' }
+      ],
+      inputKey: 'exam', progress: 80
+    },
+    {
+      step: 5, title: 'Cate ore poti invata zilnic?', desc: 'Cream un plan personalizat pentru tine.',
+      options: [
+        { icon: 'fa-clock', label: '30 minute', value: '0.5' },
+        { icon: 'fa-clock', label: '1 ora', value: '1' },
+        { icon: 'fa-clock', label: '2 ore', value: '2' },
+        { icon: 'fa-clock', label: '3+ ore', value: '3' }
+      ],
+      inputKey: 'dailyHours', progress: 100
+    }
+  ];
+
+  const currentOnboarding = onboardingSteps[onboardingStep - 1];
+
+  const handleReset = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setUserData(defaultUserData);
+    setOnboardingStep(0);
+    setOnboardingData({});
+    setNavScreen('home');
+    setScreen('auth');
+    showToast('Contul a fost resetat cu succes!', 'success');
+  };
+
+  const renderScreen = () => {
+    switch (screen) {
+      case 'splash':
+        return <SplashScreen onFinish={handleSplashFinish} />;
+      case 'auth':
+        return <AuthScreen onLogin={() => setScreen('login')} onRegister={() => setScreen('register')} />;
+      case 'login':
+        return <LoginScreen onBack={() => setScreen('auth')} onLogin={handleLogin} />;
+      case 'register':
+        return <RegisterScreen onBack={() => setScreen('auth')} onContinue={handleRegister} />;
+      case 'onboarding':
+        return currentOnboarding.isInput ? (
+          <div className="min-h-screen flex flex-col px-6 pt-10 pb-24 animate-fadeIn">
+            <div className="mb-8">
+              <div className="text-xs text-secondary font-bold uppercase tracking-wider mb-2">Pasul {currentOnboarding.step} din 5</div>
+              <h2 className="text-2xl font-extrabold mb-2">{currentOnboarding.title}</h2>
+              <p className="text-sm text-slate-400 leading-relaxed">{currentOnboarding.desc}</p>
+            </div>
+            <input type="text" value={onboardingData.name || ''} onChange={e => setOnboardingData({...onboardingData, name: e.target.value})}
+              className="w-full py-4 px-5 bg-bg-input border-[1.5px] border-white/10 rounded-xl text-white text-lg text-center outline-none focus:border-secondary transition placeholder:text-slate-600"
+              placeholder="Numele tau" />
+            <div className="mt-auto pt-6">
+              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden mb-4">
+                <div className="h-full gradient-primary rounded-full transition-all" style={{width: currentOnboarding.progress + '%'}}></div>
+              </div>
+              <button onClick={handleOnboardingNext} className="w-full py-4 rounded-xl gradient-primary text-white font-semibold flex items-center justify-center gap-3 shadow-[0_4px_20px_rgba(124,58,237,0.4)] hover:-translate-y-0.5 transition">
+                Continua <i className="fas fa-arrow-right"></i>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <OnboardingScreen
+            step={currentOnboarding.step}
+            total={5}
+            title={currentOnboarding.title}
+            desc={currentOnboarding.desc}
+            options={currentOnboarding.options}
+            selected={onboardingData[currentOnboarding.inputKey]}
+            onSelect={(opt) => setOnboardingData({...onboardingData, [currentOnboarding.inputKey]: opt.value})}
+            onNext={handleOnboardingNext}
+            onBack={handleOnboardingBack}
+            isLast={onboardingStep === 5}
+            progress={currentOnboarding.progress}
+          />
+        );
+      case 'home':
+        return <HomeScreen userData={userData} onNavigate={handleNavigate} />;
+      case 'professor':
+        return <ProfessorScreen onNavigate={handleNavigate} onToast={showToast} />;
+      case 'learnType':
+        return <LearnTypeScreen onStart={handleStartLearn} />;
+      case 'timer':
+        return <TimerScreen onFinish={handleTimerFinish} onToast={showToast} />;
+      case 'report':
+        return <ReportScreen onHome={() => { setScreen('home'); setNavScreen('home'); }} onToast={showToast} />;
+      case 'calendar':
+        return <CalendarScreen userData={userData} />;
+      case 'profile':
+        return <ProfileScreen userData={userData} onUpdate={setUserData} onToast={showToast} onReset={handleReset} />;
+      default:
+        return <HomeScreen userData={userData} onNavigate={handleNavigate} />;
+    }
+  };
+
+  const showNav = ['home', 'professor', 'learnType', 'calendar', 'profile'].includes(screen);
+
+  return (
+    <div className="max-w-[480px] mx-auto min-h-screen relative bg-bg overflow-hidden">
+      <svg width="0" height="0" className="absolute">
+        <defs>
+          <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#7c3aed" />
+            <stop offset="100%" stopColor="#a78bfa" />
+          </linearGradient>
+          <linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#7c3aed" />
+            <stop offset="100%" stopColor="#3b82f6" />
+          </linearGradient>
+        </defs>
+      </svg>
+
+      {renderScreen()}
+
+      {showNav && <BottomNav active={navScreen} onNavigate={handleNavigate} />}
+
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+    </div>
+  );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+</script>
+</body>
+</html>
